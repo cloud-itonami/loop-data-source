@@ -7,6 +7,10 @@ corpus を束ねる統括（charter/coordinator）です。実働の bot は Her
 `data-source-market-intel` と `data-source-gleif` の 2 体で、この repo は両者の
 管轄・境界・配信契約を宣言する場所です。
 
+**operator として何をすればよいか**は [`docs/operator-quickstart.md`](docs/operator-quickstart.md)
+が正本です —— 引用の取り直し方、exit の 3 値の読み方（**2 は合格ではない**）、
+赤くなったときの判断表、買い手に約束してよいことの境界。
+
 ## 事業の対象
 
 - **market-intel**: SEC 公開ファイリング（公開ライセンス）から company 情報を
