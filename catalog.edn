@@ -1,0 +1,216 @@
+;; catalog.edn — where the itonami data-source business gets its bytes, and
+;; under what terms.
+;;
+;; This repo is the charter for that business: README says it "declares the
+;; jurisdiction, boundary and delivery contract" for two corpus bots
+;; (data-source-market-intel over SEC EDGAR, data-source-gleif over the GLEIF
+;; LEI catalog). Until this file existed the charter named neither an endpoint
+;; nor a licence. A supply contract that does not say what it is a contract
+;; OVER is not a boundary; to find out which bytes the business may sell you
+;; had to read a collector's source at whatever commit it happened to be at.
+;;
+;; Every :source/url below was fetched on :catalog/verified-on with
+;; :catalog/user-agent, returned its :source/expect-status, and contained
+;; every string in :source/expect-quotes. Re-check with:
+;;
+;;     nbb bin/verify_sources.cljs
+;;
+;; The quotes are load-bearing, not decorative. A citation that still 200s
+;; while no longer carrying the claim reads as evidence and is worse than no
+;; citation, so the verifier checks the payload and not just the status code.
+;;
+;; Two quotes below are TRIPWIRES: they pin a fact that we expect to change,
+;; and the verifier going red is the notification. They are marked
+;; :source/tripwire? true. Do not "fix" one by shortening the quote.
+
+{:catalog/id          "cloud-itonami/loop-data-source#sources"
+ :catalog/verified-on "2026-09-09"
+ :catalog/verifier    "bin/verify_sources.cljs"
+
+ ;; Default UA. GLEIF requires no authentication and no contact of any kind,
+ ;; so this is enough for every :gleif/* source and for the deed pages.
+ :catalog/user-agent  "itonami-data-source/1.0 (+https://github.com/cloud-itonami/loop-data-source)"
+
+ ;; SEC needs its own, and it is NOT committed here. data-source-market-intel
+ ;; already takes it from this environment variable (README of
+ ;; network-awai/cloud-murakumo-market-intel: SEC_EDGAR_USER_AGENT="your-app-name
+ ;; contact@example.com"), so the charter names the same variable rather than
+ ;; inventing a second convention or shipping somebody's address in git.
+ ;;
+ ;; The contact must be an address the operator actually monitors. Measured
+ ;; 2026-09-09, SEC is strict about its FORM in a way the FAQ does not spell
+ ;; out, and gets it wrong in the direction that looks like a network problem:
+ ;;
+ ;;   "itonami-data-source/1.0 data-source@itonami.cloud"                 -> 200
+ ;;   "itonami-data-source/1.0 (+https://github.com/cloud-itonami/...)"   -> 403
+ ;;
+ ;; Same URL, same client, reproduced under both curl and node fetch. A UA
+ ;; carrying a URL instead of an email is rejected. Worth writing down because
+ ;; a 403 reads as blocked/rate-limited rather than as "your contact is the
+ ;; wrong shape", and the natural fix — back off and retry — never succeeds.
+ :catalog/sec-user-agent-env "SEC_EDGAR_USER_AGENT"
+
+ :catalog/sources
+ [;; -------------------------------------------------------------------------
+  ;; A. market-intel — SEC EDGAR. Public-domain US government filings.
+  ;; -------------------------------------------------------------------------
+  {:source/id       :sec/company-tickers
+   :source/requires-sec-ua? true
+   :source/bot      "data-source-market-intel"
+   :source/role     "The ticker -> CIK map. Entry point for the corpus: every other SEC call below is keyed by the CIK this file supplies."
+   :source/url      "https://www.sec.gov/files/company_tickers.json"
+   :source/expect-status 200
+   :source/expect-quotes ["cik_str"]
+   :source/licence  "us-public-domain"
+   :source/licence-authority :sec/access-policy}
+
+  {:source/id       :sec/submissions
+   :source/requires-sec-ua? true
+   :source/bot      "data-source-market-intel"
+   :source/role     "Per-company filing history and entity metadata (SIC code, exchanges, EIN). One request per CIK."
+   :source/template "https://data.sec.gov/submissions/CIK{CIK10}.json"
+   :source/url      "https://data.sec.gov/submissions/CIK0000320193.json"
+   :source/expect-status 200
+   ;; "lei":null is the tripwire. See :catalog/boundary — this endpoint carries
+   ;; an lei field, and it is empty for every issuer we sampled. The entire
+   ;; cross-corpus join rests on that being either fixed or worked around, so
+   ;; the day SEC starts populating it, this check must go red and somebody
+   ;; must come back and re-read the boundary note.
+   :source/expect-quotes ["sicDescription" "\"lei\":null"]
+   :source/tripwire? true
+   :source/licence  "us-public-domain"
+   :source/licence-authority :sec/access-policy}
+
+  {:source/id       :sec/companyfacts
+   :source/requires-sec-ua? true
+   :source/bot      "data-source-market-intel"
+   :source/role     "XBRL company facts — the financial figures behind :company/revenue-usd and friends on the query plane."
+   :source/template "https://data.sec.gov/api/xbrl/companyfacts/CIK{CIK10}.json"
+   :source/url      "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+   :source/expect-status 200
+   :source/expect-quotes ["entityName" "us-gaap"]
+   :source/licence  "us-public-domain"
+   :source/licence-authority :sec/access-policy}
+
+  {:source/id       :sec/sic-codes
+   :source/requires-sec-ua? true
+   :source/bot      "data-source-market-intel"
+   :source/role     "The SIC code list that gives :sicDescription in :sec/submissions its meaning. Needed to map an issuer onto an industry."
+   :source/url      "https://www.sec.gov/info/edgar/siccodes.htm"
+   :source/expect-status 200
+   :source/expect-quotes ["Standard Industrial Classification (SIC) Code List"]
+   :source/licence  "us-public-domain"
+   :source/licence-authority :sec/access-policy}
+
+  ;; -------------------------------------------------------------------------
+  ;; B. gleif — the LEI catalog. CC0.
+  ;; -------------------------------------------------------------------------
+  {:source/id       :gleif/lei-records
+   :source/bot      "data-source-gleif"
+   :source/role     "Paged LEI record API. The incremental read path; :gleif/golden-copy-publishes is the bulk one."
+   :source/template "https://api.gleif.org/api/v1/lei-records?page[number]={N}&page[size]={SIZE}"
+   :source/url      "https://api.gleif.org/api/v1/lei-records?page%5Bsize%5D=1"
+   :source/expect-status 200
+   ;; goldenCopy in the meta block is what ties this endpoint to the bulk file
+   ;; below: the API answers out of a dated Golden Copy snapshot, so the two
+   ;; sources are the same corpus at possibly different publish dates rather
+   ;; than two independent feeds that happen to agree.
+   :source/expect-quotes ["goldenCopy" "pagination"]
+   :source/licence  "CC0-1.0"
+   :source/licence-authority :gleif/lei-data-terms}
+
+  {:source/id       :gleif/golden-copy-publishes
+   :source/bot      "data-source-gleif"
+   :source/role     "Index of Golden Copy bulk publishes (CSV/XML, full file and deltas). The bulk ingest path for the whole catalog."
+   :source/url      "https://goldencopy.gleif.org/api/v2/golden-copies/publishes"
+   :source/expect-status 200
+   :source/expect-quotes ["GoldenCopy" "record_count"]
+   :source/licence  "CC0-1.0"
+   :source/licence-authority :gleif/lei-data-terms}
+
+  ;; -------------------------------------------------------------------------
+  ;; C. The authorities for the terms. The two halves of this business are
+  ;;    NOT under one licence, and the README's "公開ライセンスの研究データ"
+  ;;    covers both without saying so. They are separated here because the
+  ;;    obligations differ: CC0 carries none, US public domain carries none
+  ;;    either, but SEC attaches an ACCESS condition (declare a user agent,
+  ;;    stay under the rate cap) that is not a licence term and does not
+  ;;    travel with the bytes.
+  ;; -------------------------------------------------------------------------
+  {:source/id       :sec/access-policy
+   :source/requires-sec-ua? true
+   :source/role     "Authority for the SEC access conditions: the rate cap and the User-Agent requirement. Not a licence — an access condition on the collector."
+   :source/url      "https://www.sec.gov/os/webmaster-faq"
+   :source/expect-status 200
+   :source/expect-quotes ["10 requests per second"
+                          "Please declare your user agent in request headers"]
+   :source/note     "The cap is on the collector, not on the corpus. Nothing here restricts redistribution of bytes already collected."}
+
+  {:source/id       :sec/edgar-apis
+   :source/requires-sec-ua? true
+   :source/role     "Authority that data.sec.gov is the documented programmatic surface, so the endpoints above are the supported path rather than scraped ones."
+   :source/url      "https://www.sec.gov/search-filings/edgar-application-programming-interfaces"
+   :source/expect-status 200
+   :source/expect-quotes ["data.sec.gov/submissions/CIK"]}
+
+  {:source/id       :gleif/lei-data-terms
+   :source/role     "Authority for the licence of everything data-source-gleif collects."
+   :source/url      "https://www.gleif.org/en/meta/lei-data-terms-of-use"
+   :source/expect-status 200
+   :source/expect-quotes ["provided under the CC0 licence"]}
+
+  {:source/id       :gleif/open-data
+   :source/role     "Second, independent statement of the same licence, on GLEIF's open-data page rather than in its terms."
+   :source/url      "https://www.gleif.org/en/about/open-data"
+   :source/expect-status 200
+   :source/expect-quotes ["provided under a Creative Commons (CC0) license"]}
+
+  {:source/id       :cc/zero-1.0
+   :source/role     "The CC0-1.0 deed named by :gleif/lei-data-terms."
+   :source/url      "https://creativecommons.org/publicdomain/zero/1.0/"
+   :source/expect-status 200
+   :source/expect-quotes ["CC0 1.0 Universal"]}]
+
+ ;; ---------------------------------------------------------------------------
+ ;; D. The join boundary.
+ ;;
+ ;;    The workspace query plane joins datasets on :company/lei (CLAUDE.md,
+ ;;    "企業データと fleet 状態も同じ面に載っており :company/lei を結合キーに
+ ;;    repo を跨いで join できる"). This business sells a market-intel corpus
+ ;;    and a gleif corpus, so the natural reading of the delivery contract is
+ ;;    that a buyer can join the two halves on that key.
+ ;;
+ ;;    Measured 2026-09-09, that join CANNOT be made from the SEC side.
+ ;;    :sec/submissions does expose an "lei" field — so a collector reading the
+ ;;    schema would reasonably wire it up — and it was null for all 20 of the
+ ;;    largest US issuers sampled, including every major bank (Apple, NVIDIA,
+ ;;    Alphabet, Microsoft, Amazon, Meta, J&J, JPMorgan, Walmart, Exxon, BofA,
+ ;;    Citigroup, Wells Fargo, Berkshire, IBM, P&G, Coca-Cola, Thermo Fisher,
+ ;;    Chevron, Dollar General). 0/20 populated.
+ ;;
+ ;;    It is a POPULATION gap on the SEC side, not an absence of the identifier:
+ ;;    the probe below shows GLEIF holds an LEI for JPMorgan Chase & Co. So the
+ ;;    join has to be built from the GLEIF side (name and other identifiers),
+ ;;    with its own error rate, and the delivery contract must not promise a
+ ;;    key-equality join it cannot perform.
+ ;;
+ ;;    This is written down because a null field and an absent field look
+ ;;    identical downstream: both arrive as no LEI, and a corpus that joined on
+ ;;    it would return zero rows while every individual fetch reported success.
+ ;; ---------------------------------------------------------------------------
+ :catalog/boundary
+ {:boundary/measured-on "2026-09-09"
+  :boundary/sampled 20
+  :boundary/sec-lei-populated 0
+  :boundary/probes
+  [{:probe/id     :gleif/lei-record-jpmorgan
+    :probe/means  "The counter-example: SEC reports lei null for CIK 0000019617, and GLEIF holds an LEI for the same legal entity. Proves the SEC null is a population gap, not a missing identifier."
+    :probe/url    "https://api.gleif.org/api/v1/lei-records/8I5DZWZKVSZI1NUHU748"
+    :probe/expect-status 200
+    :probe/expect-quotes ["8I5DZWZKVSZI1NUHU748" "JPMORGAN CHASE & CO."]}
+
+   {:probe/id     :probe/user-agent-contact
+    :probe/means  "The contact URL inside :catalog/user-agent, which is what GLEIF and the deed pages see. A UA that points at a dead address identifies nobody."
+    :probe/url    "https://github.com/cloud-itonami/loop-data-source"
+    :probe/expect-status 200
+    :probe/expect-quotes ["loop-data-source"]}]}}

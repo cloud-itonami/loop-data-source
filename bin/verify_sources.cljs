@@ -1,0 +1,173 @@
+#!/usr/bin/env nbb
+;; verify_sources.cljs — re-fetch every citation in catalog.edn and check that
+;; it still says what the catalog says it says.
+;;
+;; A citation that 200s is not a verified citation. API fields get renamed and
+;; terms pages get rewritten, and a link that still resolves while no longer
+;; carrying the claim reads as evidence — which is worse than no link at all.
+;; So each source declares :source/expect-quotes and this checks the payload.
+;;
+;; Three outcomes, three exit codes. The third one is the point:
+;;
+;;   0  every citation was reached AND matched
+;;   1  a citation was reached and did NOT match — a real defect. Either the
+;;      upstream changed (fix the catalog, and whatever claim rested on it) or
+;;      a tripwire fired (:source/tripwire? — go re-read :catalog/boundary).
+;;   2  a citation could not be reached, or there was nothing to check.
+;;      NOT a pass. "I could not measure" and "I measured and it was fine"
+;;      must not leave by the same exit.
+;;
+;; Usage:  nbb bin/verify_sources.cljs [--catalog catalog.edn] [--quiet]
+
+(ns verify-sources
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            ["fs" :as fs]))
+
+(def argv (vec (drop 2 (js->clj (.-argv js/process)))))
+
+(defn- flag-value [nm default]
+  (let [i (.indexOf argv nm)]
+    (if (and (nat-int? i) (>= i 0) (< (inc i) (count argv))) (nth argv (inc i)) default)))
+
+(def quiet? (boolean (some #{"--quiet"} argv)))
+(def catalog-path (flag-value "--catalog" "catalog.edn"))
+
+;; ---------------------------------------------------------------------------
+;; Matching
+;; ---------------------------------------------------------------------------
+
+(defn- normalise
+  "Strip HTML tags and collapse whitespace.
+
+  Without this every quote taken from a documentation page is a false
+  negative: the sentence is really there, but the rendered HTML puts markup
+  between its halves. The fix belongs here and not in the citation — trimming
+  a quote until it fits inside one tag would weaken the very thing being
+  checked."
+  [s]
+  (-> s (str/replace #"<[^>]*>" " ") (str/replace #"\s+" " ")))
+
+(defn- contains-quote?
+  "Raw first, then tag-stripped. JSON payloads match raw; HTML matches stripped."
+  [raw norm q]
+  (or (str/includes? raw q) (str/includes? norm q)))
+
+;; ---------------------------------------------------------------------------
+;; Fetching
+;; ---------------------------------------------------------------------------
+
+(defn- fetch-one [url ua]
+  (-> (js/fetch url #js {:headers #js {"User-Agent" ua "Accept" "*/*"}
+                         :signal (js/AbortSignal.timeout 30000)})
+      (.then (fn [res] (-> (.text res)
+                           (.then (fn [t] {:status (.-status res) :body t})))))
+      (.catch (fn [e] {:error (or (.-message e) (str e))}))))
+
+(defn- check
+  "One citation. Returns {:id :verdict #{:ok :fail :unreachable} :why}."
+  [{:keys [id url expect-status expect-quotes tripwire? requires-sec-ua?]} ua sec-ua]
+  (if (and requires-sec-ua? (not sec-ua))
+    ;; Not reachable, and NOT a pass. Without the SEC user agent these
+    ;; citations were never checked, and "not checked" must not exit like
+    ;; "checked and fine".
+    (js/Promise.resolve
+     {:id id :url url :verdict :unreachable
+      :why "no SEC user agent — set SEC_EDGAR_USER_AGENT to an address you monitor (see :catalog/sec-user-agent-env)"})
+    (-> (fetch-one url (if requires-sec-ua? sec-ua ua))
+      (.then
+       (fn [{:keys [status body error]}]
+         (cond
+           error
+           {:id id :url url :verdict :unreachable :why (str "could not reach: " error)}
+
+           (not= status expect-status)
+           {:id id :url url :verdict :fail
+            :why (str "expected HTTP " expect-status ", got " status)}
+
+           :else
+           (let [norm    (normalise body)
+                 missing (vec (remove #(contains-quote? body norm %) expect-quotes))]
+             (if (seq missing)
+               {:id id :url url :verdict :fail :tripwire? tripwire?
+                :why (str "HTTP " status " as expected, but the payload no longer contains: "
+                          (str/join " | " (map pr-str missing))
+                          (when tripwire?
+                            "  [TRIPWIRE — this was expected to change one day; go re-read :catalog/boundary]"))}
+               {:id id :url url :verdict :ok
+                :why (str "HTTP " status ", " (count expect-quotes) " quote(s) present")}))))))))
+
+;; ---------------------------------------------------------------------------
+
+(defn- citations
+  "Sources and boundary probes flattened into one shape. Probes carry the
+   business's join boundary and are checked exactly like sources."
+  [cat]
+  (concat
+   (for [s (:catalog/sources cat)]
+     {:id (:source/id s) :url (:source/url s)
+      :expect-status (:source/expect-status s)
+      :expect-quotes (or (:source/expect-quotes s) [])
+      :tripwire? (:source/tripwire? s)
+      :requires-sec-ua? (:source/requires-sec-ua? s)})
+   (for [p (get-in cat [:catalog/boundary :boundary/probes])]
+     {:id (:probe/id p) :url (:probe/url p)
+      :expect-status (:probe/expect-status p)
+      :expect-quotes (or (:probe/expect-quotes p) [])
+      :tripwire? (:probe/tripwire? p)})))
+
+(defn- run-sequentially
+  "One request at a time. SEC caps callers at 10 requests/second
+   (:sec/access-policy); serial requests stay under it without a rate limiter."
+  [items ua sec-ua]
+  (reduce (fn [p item]
+            (.then p (fn [acc] (.then (check item ua sec-ua) #(conj acc %)))))
+          (js/Promise.resolve [])
+          items))
+
+(defn -main []
+  (when-not (fs/existsSync catalog-path)
+    (println (str "REFUSING to report a pass: no catalog at " catalog-path))
+    (.exit js/process 2))
+  (let [cat    (edn/read-string (fs/readFileSync catalog-path "utf8"))
+        ua     (:catalog/user-agent cat)
+        sec-ua (let [v (aget (.-env js/process) (:catalog/sec-user-agent-env cat "SEC_EDGAR_USER_AGENT"))]
+                 (when (and (string? v) (seq (str/trim v))) v))
+        items  (vec (citations cat))]
+    (when (empty? items)
+      (println "REFUSING to report a pass: the catalog declares 0 citations.")
+      (.exit js/process 2))
+    (when-not (string? ua)
+      (println "REFUSING to report a pass: :catalog/user-agent is not a string. SEC rejects undeclared callers.")
+      (.exit js/process 2))
+    (when-not quiet?
+      (println (str "catalog " (:catalog/id cat)
+                    "  verified-on " (:catalog/verified-on cat)
+                    "  citations " (count items)
+                    "  sec-ua " (if sec-ua "set" "MISSING"))))
+    (-> (run-sequentially items ua sec-ua)
+        (.then
+         (fn [results]
+           (let [by  (group-by :verdict results)
+                 ok  (count (:ok by)) bad (count (:fail by)) un (count (:unreachable by))]
+             (when-not quiet?
+               (doseq [r results]
+                 (println (str "  " (case (:verdict r) :ok "OK  " :fail "FAIL" :unreachable "????")
+                               "  " (name (:id r)) " — " (:why r))))
+               (println))
+             ;; Evidence floor: say how many were actually checked, so that
+             ;; "checked nothing" cannot be read as "found nothing wrong".
+             (println (str "CHECKED\t" (count items) "\tok=" ok "\tfail=" bad "\tunreachable=" un))
+             (cond
+               (pos? bad)
+               (do (println "FAIL: a citation no longer supports the claim that rests on it.")
+                   (.exit js/process 1))
+               (pos? un)
+               (do (println (str "UNVERIFIED: " un " citation(s) could not be reached. "
+                                 "This is not a pass — nothing was learned about them."))
+                   (.exit js/process 2))
+               :else
+               (do (println "OK: every citation resolved and still says what the catalog says it says.")
+                   (.exit js/process 0)))))))))
+
+(-main)
