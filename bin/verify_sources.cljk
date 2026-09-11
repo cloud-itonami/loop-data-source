@@ -17,7 +17,7 @@
 ;;      NOT a pass. "I could not measure" and "I measured and it was fine"
 ;;      must not leave by the same exit.
 ;;
-;; Usage:  nbb bin/verify_sources.cljs [--catalog catalog.edn] [--quiet]
+;; Usage:  nbb bin/verify_sources.cljk [--catalog catalog.edn] [--quiet]
 
 (ns verify-sources
   (:require [clojure.edn :as edn]

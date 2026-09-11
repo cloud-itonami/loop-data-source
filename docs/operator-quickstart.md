@@ -3,7 +3,7 @@
 この repo は **charter であって collector ではありません**。ここには収集する
 コードは 1 行も無く、在るのは「どのバイトを、どの条件で売ってよいか」の宣言
 （[`catalog.edn`](../catalog.edn)）と、その宣言が**今日もまだ真であること**を
-測る道具（[`bin/verify_sources.cljs`](../bin/verify_sources.cljs)）だけです。
+測る道具（[`bin/verify_sources.cljk`](../bin/verify_sources.cljk)）だけです。
 
 したがって operator の仕事はちょうど 1 つです:
 
@@ -57,8 +57,8 @@ charter が 2 つ目の作法を発明しないためです。
 ## 3. 走らせる
 
 ```bash
-nbb bin/verify_sources.cljs            # 13 引用。実測 2026-09-09 で 9 秒
-nbb bin/verify_sources.cljs --quiet    # 集計行だけ
+nbb bin/verify_sources.cljk            # 13 引用。実測 2026-09-09 で 9 秒
+nbb bin/verify_sources.cljk --quiet    # 集計行だけ
 ```
 
 要求は **1 本ずつ直列**に出ます。SEC の上限が 10 req/s なので、直列である限り

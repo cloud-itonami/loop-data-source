@@ -13,7 +13,7 @@
 ;; :catalog/user-agent, returned its :source/expect-status, and contained
 ;; every string in :source/expect-quotes. Re-check with:
 ;;
-;;     nbb bin/verify_sources.cljs
+;;     nbb bin/verify_sources.cljk
 ;;
 ;; The quotes are load-bearing, not decorative. A citation that still 200s
 ;; while no longer carrying the claim reads as evidence and is worse than no
@@ -25,7 +25,7 @@
 
 {:catalog/id          "cloud-itonami/loop-data-source#sources"
  :catalog/verified-on "2026-09-09"
- :catalog/verifier    "bin/verify_sources.cljs"
+ :catalog/verifier    "bin/verify_sources.cljk"
 
  ;; Default UA. GLEIF requires no authentication and no contact of any kind,
  ;; so this is enough for every :gleif/* source and for the deed pages.
