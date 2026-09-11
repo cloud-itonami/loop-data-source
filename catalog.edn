@@ -13,7 +13,7 @@
 ;; :catalog/user-agent, returned its :source/expect-status, and contained
 ;; every string in :source/expect-quotes. Re-check with:
 ;;
-;;     nbb bin/verify_sources.cljk
+;;     kbb --backend sci bin/verify_sources.cljk
 ;;
 ;; The quotes are load-bearing, not decorative. A citation that still 200s
 ;; while no longer carrying the claim reads as evidence and is worse than no

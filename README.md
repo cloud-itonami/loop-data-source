@@ -37,7 +37,7 @@ corpus を束ねる統括（charter/coordinator）です。実働の bot は Her
 
 ```bash
 # 全 13 引用を取り直し、ステータスと本文の両方を検査する
-SEC_EDGAR_USER_AGENT="<your-app> <contact@example.com>" nbb bin/verify_sources.cljk
+SEC_EDGAR_USER_AGENT="<your-app> <contact@example.com>" kbb --backend sci bin/verify_sources.cljk
 ```
 
 - 引用は**本文まで**検査します。200 を返しながら当の主張を載せなくなったページは、
