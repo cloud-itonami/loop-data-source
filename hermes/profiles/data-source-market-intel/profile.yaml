@@ -1,0 +1,2 @@
+description: 'data-source / market-intel — itonami データソース事業 corpus bot. 対象 corpus: market-intel (network-awai/cloud-murakumo-market-intel). 毎 tick、鮮度(HEAD)+datom 行数+ライセンス+x402 SKU readiness を read-only で測り 1 提案。x402 SKU 登録・ledger 書き込みはしない(propose のみ)。'
+description_auto: false
