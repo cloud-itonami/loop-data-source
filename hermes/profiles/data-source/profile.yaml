@@ -1,0 +1,2 @@
+description: 'data-source — itonami データソース事業 bot: 公開ライセンス corpus (market-intel SEC / GLEIF LEI 等) を収集・正規化し datom plane / lake へ同期し、kotobase.net の x402 販売 SKU 候補を提案する（1 tick = 1 corpus の鮮度・ライセンス・x402 整合を測り 1 提案）。maritime: 収集→同期→提案のみ。'
+description_auto: false
