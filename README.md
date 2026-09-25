@@ -47,6 +47,14 @@ SEC_EDGAR_USER_AGENT="<your-app> <contact@example.com>" kbb --backend sci bin/ve
 - SEC の UA は commit しません（`SEC_EDGAR_USER_AGENT`。data-source-market-intel と
   同じ変数）。⚠ **URL 形の連絡先は 403 になります** —— メールアドレスを入れてください。
 
+verifier 自身の検査（offline。local server に canned payload を置いて 3 値の exit・
+SEC UA の送り分け・本文照合を、`catalog.edn` については SEC host の UA 指定・
+licence 出典の解決・UA 連絡先の probe・bot の Hermes profile を確かめる）:
+
+```bash
+kbb --backend sci test/verify_sources_test.cljk   # repo root で。緑なら "loop-data-source verify_sources: OK"
+```
+
 ### 既知の境界: 2 つの corpus は `:company/lei` で join できない
 
 SEC の `submissions` は `lei` フィールドを持ちますが、2026-09-09 に測った限り
