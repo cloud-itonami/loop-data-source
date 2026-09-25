@@ -1,0 +1,279 @@
+;; verify_sources_test.cljk — does bin/verify_sources.cljk still refuse what it
+;; says it refuses, and does catalog.edn still hold the shape its comments claim?
+;;
+;;   kbb --backend sci test/verify_sources_test.cljk      # from the repo root
+;;
+;; Offline. The verifier runs as a subprocess against catalogs written to a temp
+;; dir, whose URLs point at a local HTTP server serving canned payloads. Nothing
+;; here reaches SEC or GLEIF — the live check stays bin/verify_sources.cljk.
+;;
+;; The verifier's point is its third exit code: 2 = "could not measure", which
+;; must never leave by the same door as 0 = "measured and fine". Most cases
+;; below pin one way that door could open by accident.
+;;
+;; Exit 0 and prints "loop-data-source verify_sources: OK" only when every case
+;; passed; exit 1 names each failing case.
+
+(ns verify-sources-test
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            ["fs" :as fs]
+            ["http" :as http]
+            ["os" :as os]
+            ["path" :as path]
+            ["child_process" :as cp]))
+
+(def argv (js->clj (.-argv js/process)))
+(def repo-root (path/resolve (path/dirname (nth argv 2)) ".."))
+(def verifier (path/join repo-root "bin" "verify_sources.cljk"))
+(def tmp (fs/mkdtempSync (path/join (os/tmpdir) "verify-sources-test-")))
+
+;; ---------------------------------------------------------------------------
+;; A local server with canned payloads. Records the User-Agent each path saw.
+;; ---------------------------------------------------------------------------
+
+(def seen (atom {}))
+
+(def routes
+  {"/ok"      [200 "alpha beta"]
+   "/nomatch" [200 "alpha"]
+   "/500"     [500 "alpha beta"]
+   ;; the quote is really there, but markup sits between its words
+   "/html"    [200 "<p>Standard <b>Industrial</b>\n  Classification</p>"]
+   "/sec"     [200 "alpha beta"]
+   "/plain"   [200 "alpha beta"]})
+
+(def server
+  (http/createServer
+   (fn [req res]
+     (let [p (.-url req)
+           [status body] (get routes p [404 "no route"])]
+       (swap! seen update p (fnil conj []) (aget (.-headers req) "user-agent"))
+       (.writeHead res status #js {"Content-Type" "text/html"})
+       (.end res body)))))
+
+(def base (atom nil))
+(defn- u [p] (str @base p))
+;; Port 1 on loopback: connection refused, immediately.
+(def dead "http://127.0.0.1:1/unreachable")
+
+;; ---------------------------------------------------------------------------
+;; Running the verifier
+;; ---------------------------------------------------------------------------
+
+(def ^:private n (atom 0))
+
+(defn- write-catalog [cat]
+  (let [f (path/join tmp (str "catalog-" (swap! n inc) ".edn"))]
+    (fs/writeFileSync f (pr-str cat))
+    f))
+
+(defn- run-verifier
+  "Resolves {:exit :out}. The node + kbb engine that runs this test runs the
+   verifier too (argv 0 and 1), so PATH does not decide which host is tested."
+  [catalog-file & {:keys [sec-ua]}]
+  (js/Promise.
+   (fn [resolve _]
+     (let [env (js/Object.assign #js {} (.-env js/process))
+           _   (js-delete env "SEC_EDGAR_USER_AGENT")
+           _   (when sec-ua (aset env "SEC_EDGAR_USER_AGENT" sec-ua))
+           ch  (cp/spawn (nth argv 0) #js [(nth argv 1) verifier "--catalog" catalog-file]
+                         #js {:env env :cwd repo-root})
+           out (atom "")]
+       (.on (.-stdout ch) "data" #(swap! out str %))
+       (.on (.-stderr ch) "data" #(swap! out str %))
+       (.on ch "close" (fn [code] (resolve {:exit code :out @out})))))))
+
+(defn- src [id url quotes & {:as more}]
+  (merge {:source/id id :source/url url :source/expect-status 200
+          :source/expect-quotes quotes}
+         more))
+
+(defn- cat* [sources & {:keys [probes]}]
+  (cond-> {:catalog/id "test" :catalog/verified-on "test"
+           :catalog/user-agent "verify-sources-test/1 (+http://127.0.0.1/)"
+           :catalog/sec-user-agent-env "SEC_EDGAR_USER_AGENT"
+           :catalog/sources sources}
+    probes (assoc :catalog/boundary {:boundary/probes probes})))
+
+;; ---------------------------------------------------------------------------
+;; Cases. Each resolves nil on pass or a string saying what broke.
+;; ---------------------------------------------------------------------------
+
+(defn- expect [{:keys [exit out]} want-exit & needles]
+  (let [missing (remove #(str/includes? out %) needles)]
+    (cond
+      (not= exit want-exit) (str "exit " exit ", wanted " want-exit "\n" out)
+      (seq missing)         (str "output lacks " (pr-str (vec missing)) "\n" out))))
+
+(def verifier-cases
+  [["all-matching-citations-exit-0"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/ok") ["alpha" "beta"])
+                                             (src :t/b (u "/ok") ["beta"])])))
+         (.then (fn [r] (expect r 0 "CHECKED\t2\tok=2\tfail=0\tunreachable=0"))))]
+
+   ["missing-quote-exits-1"
+    ;; 200 while no longer carrying the claim is the failure the catalog exists for
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/nomatch") ["alpha" "beta"])])))
+         (.then (fn [r] (expect r 1 "no longer contains: \"beta\"" "FAIL: a citation"))))]
+
+   ["wrong-status-exits-1"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/500") ["alpha"])])))
+         (.then (fn [r] (expect r 1 "expected HTTP 200, got 500"))))]
+
+   ["tripwire-failure-is-named"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/nomatch") ["beta"]
+                                                  :source/tripwire? true)])))
+         (.then (fn [r] (expect r 1 "TRIPWIRE"))))]
+
+   ["html-split-quote-matches"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/html")
+                                                  ["Standard Industrial Classification"])])))
+         (.then (fn [r] (expect r 0 "ok=1"))))]
+
+   ["unreachable-exits-2"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/ok") ["alpha"])
+                                             (src :t/b dead ["alpha"])])))
+         (.then (fn [r] (expect r 2 "unreachable=1" "UNVERIFIED"))))]
+
+   ["fail-outranks-unreachable"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/nomatch") ["beta"])
+                                             (src :t/b dead ["alpha"])])))
+         (.then (fn [r] (expect r 1 "fail=1\tunreachable=1"))))]
+
+   ["sec-source-without-ua-is-unverified"
+    ;; the server would answer 200 with the quotes — the only thing standing
+    ;; between this and exit 0 is the verifier refusing to call SEC without a UA
+    #(let [before (count (get @seen "/sec"))]
+       (-> (run-verifier (write-catalog (cat* [(src :t/sec (u "/sec") ["alpha"]
+                                                    :source/requires-sec-ua? true)])))
+           (.then (fn [r]
+                    (or (expect r 2 "no SEC user agent" "unreachable=1")
+                        (when (not= before (count (get @seen "/sec")))
+                          "the SEC source was fetched although no SEC user agent was set"))))))]
+
+   ["sec-ua-goes-to-sec-sources-only"
+    #(let [ua "verify-sources-test ops@example.com"]
+       (reset! seen {})
+       (-> (run-verifier (write-catalog (cat* [(src :t/sec (u "/sec") ["alpha"]
+                                                    :source/requires-sec-ua? true)
+                                               (src :t/plain (u "/plain") ["alpha"])]))
+                         :sec-ua ua)
+           (.then (fn [r]
+                    (or (expect r 0 "ok=2")
+                        (when (not= [ua] (get @seen "/sec"))
+                          (str "SEC source saw UA " (pr-str (get @seen "/sec"))))
+                        (when (not= ["verify-sources-test/1 (+http://127.0.0.1/)"] (get @seen "/plain"))
+                          (str "non-SEC source saw UA " (pr-str (get @seen "/plain")))))))))]
+
+   ["boundary-probes-are-checked"
+    #(-> (run-verifier (write-catalog (cat* [(src :t/a (u "/ok") ["alpha"])]
+                                            :probes [{:probe/id :p/x :probe/url (u "/nomatch")
+                                                      :probe/expect-status 200
+                                                      :probe/expect-quotes ["beta"]}])))
+         (.then (fn [r] (expect r 1 "CHECKED\t2" "x — HTTP 200 as expected"))))]
+
+   ["empty-catalog-is-refused"
+    #(-> (run-verifier (write-catalog (cat* [])))
+         (.then (fn [r] (expect r 2 "REFUSING to report a pass: the catalog declares 0 citations"))))]
+
+   ["missing-catalog-is-refused"
+    #(-> (run-verifier (path/join tmp "no-such-catalog.edn"))
+         (.then (fn [r] (expect r 2 "REFUSING to report a pass: no catalog"))))]])
+
+;; ---------------------------------------------------------------------------
+;; The real catalog.edn — the claims its own comments and the README make.
+;; ---------------------------------------------------------------------------
+
+(def catalog (edn/read-string (fs/readFileSync (path/join repo-root "catalog.edn") "utf8")))
+
+(def citations
+  (concat
+   (for [s (:catalog/sources catalog)]
+     {:id (:source/id s) :url (:source/url s) :status (:source/expect-status s)
+      :quotes (:source/expect-quotes s) :sec-ua? (:source/requires-sec-ua? s)})
+   (for [p (get-in catalog [:catalog/boundary :boundary/probes])]
+     {:id (:probe/id p) :url (:probe/url p) :status (:probe/expect-status p)
+      :quotes (:probe/expect-quotes p) :sec-ua? (:probe/requires-sec-ua? p)})))
+
+(defn- host [url] (.-hostname (js/URL. url)))
+
+(def catalog-cases
+  [["catalog-citations-are-well-formed"
+    #(let [bad (for [{:keys [id url status quotes]} citations
+                     :when (not (and (keyword? id)
+                                     (string? url) (re-find #"^https?://" url)
+                                     (integer? status)
+                                     (vector? quotes) (seq quotes)
+                                     (every? (fn [q] (and (string? q) (seq q))) quotes)))]
+                 id)
+           ids (map :id citations)]
+       (cond
+         (< (count citations) 1)            "catalog.edn declares no citations"
+         (seq bad)                          (str "malformed citations: " (pr-str (vec bad)))
+         (not= (count ids) (count (set ids))) (str "duplicate ids: " (pr-str ids))))]
+
+   ["sec-hosts-require-sec-ua"
+    ;; catalog.edn, measured 2026-09-09: SEC answers 403 to a UA that carries a
+    ;; URL instead of an email — i.e. to :catalog/user-agent.
+    #(let [bad (for [{:keys [id url sec-ua?]} citations
+                     :let [h (host url)]
+                     :when (and (or (= h "sec.gov") (str/ends-with? h ".sec.gov"))
+                                (not sec-ua?))]
+                 id)]
+       (when (seq bad)
+         (str "SEC-hosted citations fetched with the default UA (will 403): " (pr-str (vec bad)))))]
+
+   ["licence-authorities-resolve"
+    #(let [ids (set (map :source/id (:catalog/sources catalog)))
+           bad (for [s (:catalog/sources catalog)
+                     :let [a (:source/licence-authority s)]
+                     :when (and a (not (ids a)))]
+                 [(:source/id s) a])]
+       (when (seq bad)
+         (str ":source/licence-authority names no source in the catalog: " (pr-str (vec bad)))))]
+
+   ["user-agent-contact-is-probed"
+    ;; the default UA identifies us by a URL; a probe must keep that URL alive
+    #(let [contact (second (re-find #"\+(https?://[^)\s]+)" (str (:catalog/user-agent catalog))))
+           probes  (set (map :probe/url (get-in catalog [:catalog/boundary :boundary/probes])))]
+       (cond
+         (nil? contact)        (str ":catalog/user-agent carries no (+URL) contact: "
+                                    (pr-str (:catalog/user-agent catalog)))
+         (not (probes contact)) (str "no boundary probe checks the UA contact " contact)))]
+
+   ["source-bots-have-hermes-profiles"
+    ;; README: the working bots are Hermes profiles held in this repo
+    #(let [bots (set (keep :source/bot (:catalog/sources catalog)))
+           bad  (remove (fn [b] (fs/existsSync (path/join repo-root "hermes" "profiles" b "profile.yaml")))
+                        bots)]
+       (cond
+         (empty? bots) "no :source/bot in catalog.edn"
+         (seq bad)     (str "bots with no hermes/profiles/<bot>/profile.yaml: " (pr-str (vec bad)))))]])
+
+;; ---------------------------------------------------------------------------
+
+(defn- run-cases [cases]
+  (reduce (fn [p [nm f]]
+            (.then p (fn [acc]
+                       (-> (js/Promise.resolve (f))
+                           (.catch (fn [e] (str "threw: " (or (.-message e) e))))
+                           (.then (fn [why]
+                                    (println (if why (str "FAIL " nm ": " why) (str "PASS " nm)))
+                                    (conj acc [nm why])))))))
+          (js/Promise.resolve [])
+          cases))
+
+(.listen server 0 "127.0.0.1"
+         (fn []
+           (reset! base (str "http://127.0.0.1:" (.-port (.address server))))
+           (-> (run-cases (concat catalog-cases verifier-cases))
+               (.then (fn [results]
+                        (.close server)
+                        (fs/rmSync tmp #js {:recursive true :force true})
+                        (let [failed (filter second results)]
+                          (println (str "RAN\t" (count results) "\tfailed=" (count failed)))
+                          (if (seq failed)
+                            (do (println "loop-data-source verify_sources: FAIL")
+                                (set! (.-exitCode js/process) 1))
+                            (println "loop-data-source verify_sources: OK"))))))))
