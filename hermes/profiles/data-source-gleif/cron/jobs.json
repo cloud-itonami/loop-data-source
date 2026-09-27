@@ -7,11 +7,11 @@
       "enabled": true,
       "enabled_toolsets": null,
       "id": "4409bbd276d3",
-      "model": "murakumo/free",
+      "model": null,
       "name": "data-source-gleif-evidence",
       "no_agent": false,
       "prompt": "data-source-gleif の 1 tick の仕事。\n\n手順（self-contained に最小）:\n1. SOUL.md を読む。\n2. terminal で measure script を 1 回実行する: `gleif_evidence.py`\n   （profile の scripts/ を指す。スクリプトが nbb の .cljs collector を呼ぶ）。\n3. スクリプトの SCANNED 行と MEASURE/SKU-READY 行を読む。SCANNED が無ければ\n   REFUSED であり、何も提案してはならない（測定不能を成功と報告しない）。\n4. その測定値から 1 件だけ次アクションを提案する（corpus の refresh / ライセンス\n   gap / x402 SKU 登録の提案のいずれか 1 件）。提案は path + evidence + gate を\n   名指しする。\n\n禁止（SOUL.md / yakuwari.edn が正本）:\n- x402 SKU を第一弾で登録しない（提案の branch+PR を 1 件出すだけ、merge しない）。\n- datom plane / BMC base / canvas-ledger を編集・追記しない。\n- main 直接 push / force-push / rebase をしない。他者の WIP / stash に触れない。\n- 測れなかった測定を成功として報告しない。UNMEASURED は UNMEASURED と書く。\n- 1 tick = 1 finding。詰め込み禁止。\n\n報告書式:\n`対象 corpus / HEAD / datom 行数 / ライセンス / x402 SKU READY / 異常の有無 / 次アクション 1 件`",
-      "provider": "murakumo",
+      "provider": null,
       "schedule": {
         "kind": "cron",
         "expr": "30 14 * * *",
