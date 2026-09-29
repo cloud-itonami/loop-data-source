@@ -174,7 +174,7 @@
  ;; ---------------------------------------------------------------------------
  ;; D. The join boundary.
  ;;
- ;;    The workspace query plane joins datasets on :company/lei (CLAUDE.md,
+ ;;    The workspace query plane joins datasets on :company/lei (AGENTS.md,
  ;;    "企業データと fleet 状態も同じ面に載っており :company/lei を結合キーに
  ;;    repo を跨いで join できる"). This business sells a market-intel corpus
  ;;    and a gleif corpus, so the natural reading of the delivery contract is
